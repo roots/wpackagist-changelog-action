@@ -2,6 +2,12 @@
 
 Automatically comment WordPress plugin changelogs on pull requests when WPackagist dependencies change in your `composer.lock` or `composer.json` files.
 
+## Features
+
+- Detects changes to WPackagist plugins in both `composer.lock` and `composer.json`
+- Fetches changelogs from WordPress.org API
+- Warns about unstable versions when installed version > WP.org's stable tag for the plugin
+
 ## Usage
 
 ### Basic Setup
@@ -33,7 +39,9 @@ The action creates a formatted comment like this:
 
 > # 🔌 WordPress Plugin Changelogs
 >
-> ## woocommerce
+> ## woocommerce (v10.2.0)
+>
+> > ⚠️ **Warning:** Installing version 10.2.0 but stable tag is 10.1.2. This may be an unstable version. [Learn more](https://github.com/outlandishideas/wpackagist/issues/547)
 >
 > <details>
 > <summary>View changelog</summary>
