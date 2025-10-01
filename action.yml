@@ -1,0 +1,136 @@
+name: 'WPackagist Changelog Action'
+description: 'Automatically comment WordPress plugin changelogs on pull requests when WPackagist dependencies change'
+author: 'Roots Software LLC'
+branding:
+  icon: 'package'
+  color: 'blue'
+
+inputs:
+  token:
+    description: 'GitHub token with permissions to comment on PRs'
+    required: false
+    default: ${{ github.token }}
+  max-changelog-length:
+    description: 'Maximum length of each plugin changelog (characters)'
+    required: false
+    default: '4000'
+  max-comment-length:
+    description: 'Maximum total comment length (characters)'
+    required: false
+    default: '60000'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Comment changelogs on PR
+      uses: actions/github-script@v7
+      env:
+        MAX_CHANGELOG_LENGTH: ${{ inputs.max-changelog-length }}
+        MAX_COMMENT_LENGTH: ${{ inputs.max-comment-length }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const MARKER = '<!-- wpackagist-changelog-bot -->';
+          let plugins = new Set();
+
+          // Paginate through changed files (API approach - no git needed)
+          let page = 1;
+          const per_page = 100;
+          while (true) {
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page,
+              page,
+            });
+            if (!files.length) break;
+
+            for (const f of files) {
+              if ((f.filename === 'composer.lock' || f.filename === 'composer.json') && f.patch) {
+                const addedLines = f.patch.split('\n').filter(line => line.startsWith('+'));
+                const addedContent = addedLines.join('\n');
+                const matches = addedContent.match(/wpackagist-plugin\/([a-z0-9\-]+)/gi) || [];
+                matches.forEach(m => plugins.add(m.toLowerCase().replace('wpackagist-plugin/', '')));
+              }
+            }
+            if (files.length < per_page) break;
+            page += 1;
+          }
+
+          plugins = [...plugins].sort();
+
+          if (plugins.length === 0) {
+            console.log('No WPackagist plugins changed');
+            return;
+          }
+
+          // Find existing bot comment via hidden marker
+          const comments = await github.rest.issues.listComments({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            per_page: 100,
+          });
+          const botComment = comments.data.find(c => c.body?.includes(MARKER));
+
+          let comment = `${MARKER}\n# 🔌 WordPress Plugin Changelogs\n\n`;
+          let totalLength = 0;
+          const maxCommentLength = parseInt(process.env.MAX_COMMENT_LENGTH);
+          const maxChangelogLength = parseInt(process.env.MAX_CHANGELOG_LENGTH);
+
+          for (const plugin of plugins) {
+            try {
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 8000);
+              const response = await fetch(
+                `https://api.wordpress.org/plugins/info/1.0/${plugin}.json`,
+                { signal: controller.signal }
+              );
+              clearTimeout(timeout);
+
+              if (!response.ok) throw new Error('Plugin not found');
+
+              const data = await response.json();
+              const changelog = data.sections?.changelog || 'No changelog available';
+
+              const pluginSection =
+                `## ${plugin}\n\n` +
+                `<details>\n<summary>View changelog</summary>\n\n` +
+                changelog.substring(0, maxChangelogLength) +
+                (changelog.length > maxChangelogLength ? '\n\n[...truncated]\n\n' : '\n\n') +
+                `[View full changelog on WordPress.org](https://wordpress.org/plugins/${plugin}/#developers)\n\n` +
+                `</details>\n\n`;
+
+              if (totalLength + pluginSection.length < maxCommentLength) {
+                comment += pluginSection;
+                totalLength += pluginSection.length;
+                continue;
+              }
+
+              comment += `\n\n⚠️ Additional plugins changed but comment size limit reached. Check composer files for details.\n`;
+              break;
+            } catch (error) {
+              comment += `## ${plugin}\n\n⚠️ Could not fetch changelog (${error.message})\n\n`;
+            }
+          }
+
+          // Upsert comment
+          if (botComment) {
+            await github.rest.issues.updateComment({
+              comment_id: botComment.id,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+            console.log('Updated existing comment');
+            return;
+          }
+
+          await github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+          console.log('Created new comment');

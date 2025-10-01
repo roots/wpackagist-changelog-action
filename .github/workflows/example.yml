@@ -1,0 +1,16 @@
+name: WPackagist Changelog
+
+on:
+  pull_request:
+    paths:
+      - 'composer.lock'
+      - 'composer.json'
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment changelogs on PR
+        uses: roots/wpackagist-changelog-action@v1
